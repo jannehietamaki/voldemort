@@ -124,7 +124,7 @@ public class MysqlStorageEngine implements StorageEngine<ByteArray, byte[]> {
             rs = stmt.executeQuery();
             return new MysqlClosableIterator(conn, stmt, rs);
         } catch(SQLException e) {
-            throw new PersistenceFailureException("Fix me!", e);
+            throw new PersistenceFailureException("Fix me: " + e.toString(), e);
         }
     }
 
@@ -160,7 +160,7 @@ public class MysqlStorageEngine implements StorageEngine<ByteArray, byte[]> {
 
             return deletedSomething;
         } catch(SQLException e) {
-            throw new PersistenceFailureException("Fix me!", e);
+            throw new PersistenceFailureException("Fix me: " + e.toString(), e);
         } finally {
             tryClose(rs);
             tryClose(selectStmt);
@@ -207,7 +207,7 @@ public class MysqlStorageEngine implements StorageEngine<ByteArray, byte[]> {
             }
             return result;
         } catch(SQLException e) {
-            throw new PersistenceFailureException("Fix me!", e);
+            throw new PersistenceFailureException("Fix me: " + e.toString(), e);
         } finally {
             tryClose(rs);
             tryClose(stmt);
@@ -226,21 +226,63 @@ public class MysqlStorageEngine implements StorageEngine<ByteArray, byte[]> {
 
     public void put(ByteArray key, Versioned<byte[]> value) throws PersistenceFailureException {
         StoreUtils.assertValidKey(key);
-        boolean doCommit = false;
         Connection conn = null;
-        PreparedStatement insert = null;
-        PreparedStatement select = null;
-        ResultSet results = null;
-        String insertSql = "insert into " + name + " (key_, version_, value_) values (?, ?, ?)";
-        String selectSql = "select key_, version_ from " + name + " where key_ = ?";
         try {
             conn = datasource.getConnection();
             conn.setAutoCommit(false);
 
             // check for superior versions
+            checkForSuperiorVersions(key, value, conn);
+
+            // Okay, cool, now put the value
+            VectorClock clock = (VectorClock) value.getVersion();
+            insertValue(key, value, clock, conn);
+            conn.commit();
+        } catch(SQLException e) {
+            try {
+                if(conn != null) {
+                    conn.rollback();
+                }
+            } catch(SQLException sqlException) {}
+            if(e.getErrorCode() == MYSQL_ERR_DUP_KEY || e.getErrorCode() == MYSQL_ERR_DUP_ENTRY) {
+                throw new ObsoleteVersionException("Key or value already used.");
+            } else {
+                throw new PersistenceFailureException("Fix me: " + e.toString(), e);
+            }
+        } finally {
+            tryClose(conn);
+        }
+    }
+
+    protected void insertValue(ByteArray key,
+                               Versioned<byte[]> value,
+                               VectorClock clock,
+                               Connection conn) throws SQLException {
+        PreparedStatement insert = null;
+        try {
+            String insertSql = "insert into " + name + " (key_, version_, value_) values (?, ?, ?)";
+            insert = conn.prepareStatement(insertSql);
+            insert.setBytes(1, key.get());
+            insert.setBytes(2, clock.toBytes());
+            insert.setBytes(3, value.getValue());
+            insert.executeUpdate();
+        } finally {
+            tryClose(insert);
+        }
+    }
+
+    private void checkForSuperiorVersions(ByteArray key, Versioned<byte[]> value, Connection conn)
+            throws SQLException {
+        ResultSet results = null;
+
+        PreparedStatement select = null;
+        try {
+            String selectSql = "select key_, version_ from " + name + " where key_ = ?";
+
             select = conn.prepareStatement(selectSql);
             select.setBytes(1, key.get());
             results = select.executeQuery();
+
             while(results.next()) {
                 byte[] thisKey = results.getBytes("key_");
                 VectorClock version = new VectorClock(results.getBytes("version_"));
@@ -253,38 +295,13 @@ public class MysqlStorageEngine implements StorageEngine<ByteArray, byte[]> {
                 else if(occured == Occured.AFTER)
                     delete(conn, thisKey, version.toBytes());
             }
-
-            // Okay, cool, now put the value
-            insert = conn.prepareStatement(insertSql);
-            insert.setBytes(1, key.get());
-            VectorClock clock = (VectorClock) value.getVersion();
-            insert.setBytes(2, clock.toBytes());
-            insert.setBytes(3, value.getValue());
-            insert.executeUpdate();
-            doCommit = true;
-        } catch(SQLException e) {
-            if(e.getErrorCode() == MYSQL_ERR_DUP_KEY || e.getErrorCode() == MYSQL_ERR_DUP_ENTRY) {
-                throw new ObsoleteVersionException("Key or value already used.");
-            } else {
-                throw new PersistenceFailureException("Fix me!", e);
-            }
         } finally {
-            if(conn != null) {
-                try {
-                    if(doCommit)
-                        conn.commit();
-                    else
-                        conn.rollback();
-                } catch(SQLException e) {}
-            }
             tryClose(results);
-            tryClose(insert);
             tryClose(select);
-            tryClose(conn);
         }
     }
 
-    private void tryClose(ResultSet rs) {
+    protected void tryClose(ResultSet rs) {
         try {
             if(rs != null)
                 rs.close();
@@ -293,7 +310,7 @@ public class MysqlStorageEngine implements StorageEngine<ByteArray, byte[]> {
         }
     }
 
-    private void tryClose(Connection c) {
+    protected void tryClose(Connection c) {
         try {
             if(c != null)
                 c.close();
@@ -302,7 +319,7 @@ public class MysqlStorageEngine implements StorageEngine<ByteArray, byte[]> {
         }
     }
 
-    private void tryClose(PreparedStatement s) {
+    protected void tryClose(PreparedStatement s) {
         try {
             if(s != null)
                 s.close();
