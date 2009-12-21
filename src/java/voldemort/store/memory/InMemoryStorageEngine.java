@@ -101,6 +101,10 @@ public class InMemoryStorageEngine<K, V> implements StorageEngine<K, V> {
         }
     }
 
+    public List<Version> getVersions(K key) {
+        return StoreUtils.getVersions(get(key));
+    }
+
     public List<Versioned<V>> get(K key) throws VoldemortException {
         StoreUtils.assertValidKey(key);
         List<Versioned<V>> results = map.get(key);
@@ -162,6 +166,11 @@ public class InMemoryStorageEngine<K, V> implements StorageEngine<K, V> {
 
     public ClosableIterator<Pair<K, Versioned<V>>> entries() {
         return new InMemoryIterator<K, V>(map);
+    }
+
+    public ClosableIterator<K> keys() {
+        // TODO Implement more efficient version.
+        return StoreUtils.keys(entries());
     }
 
     public String getName() {

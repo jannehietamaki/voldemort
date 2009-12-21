@@ -47,7 +47,7 @@ public class BdbSplitStorageEngineTest extends TestCase {
     private BdbStorageConfiguration bdbStorage;
 
     private static long CACHE_SIZE = (long) Math.min(Runtime.getRuntime().maxMemory() * 0.30,
-                                                     500 * 1000 * 1000);
+                                                     32 * 1000 * 1000);
 
     @Override
     protected void setUp() throws Exception {
@@ -154,7 +154,6 @@ public class BdbSplitStorageEngineTest extends TestCase {
 
     public void testSharedCache() throws DatabaseException {
         EnvironmentConfig environmentConfig = new EnvironmentConfig();
-        environmentConfig = new EnvironmentConfig();
         environmentConfig.setTxnNoSync(true);
         environmentConfig.setAllowCreate(true);
         environmentConfig.setTransactional(true);

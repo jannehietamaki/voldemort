@@ -45,15 +45,53 @@ public class SerializingStorageEngine<K, V> extends SerializingStore<K, V> imple
         this.storageEngine = Utils.notNull(innerStorageEngine);
     }
 
-    public ClosableIterator<Pair<K, Versioned<V>>> entries() {
-        return new DelegatingClosableIterator(storageEngine.entries());
+    public static <K1, V1> SerializingStorageEngine<K1, V1> wrap(StorageEngine<ByteArray, byte[]> s,
+                                                                 Serializer<K1> k,
+                                                                 Serializer<V1> v) {
+        return new SerializingStorageEngine<K1, V1>(s, k, v);
     }
 
-    private class DelegatingClosableIterator implements ClosableIterator<Pair<K, Versioned<V>>> {
+    public ClosableIterator<Pair<K, Versioned<V>>> entries() {
+        return new EntriesIterator(storageEngine.entries());
+    }
+
+    public ClosableIterator<K> keys() {
+        return new KeysIterator(storageEngine.keys());
+    }
+
+    private class KeysIterator implements ClosableIterator<K> {
+
+        private final ClosableIterator<ByteArray> iterator;
+
+        public KeysIterator(ClosableIterator<ByteArray> iterator) {
+            this.iterator = iterator;
+        }
+
+        public boolean hasNext() {
+            return iterator.hasNext();
+        }
+
+        public K next() {
+            ByteArray key = iterator.next();
+            if(key == null)
+                return null;
+            return getKeySerializer().toObject(key.get());
+        }
+
+        public void remove() {
+            iterator.remove();
+        }
+
+        public void close() {
+            iterator.close();
+        }
+    }
+
+    private class EntriesIterator implements ClosableIterator<Pair<K, Versioned<V>>> {
 
         private final ClosableIterator<Pair<ByteArray, Versioned<byte[]>>> iterator;
 
-        public DelegatingClosableIterator(ClosableIterator<Pair<ByteArray, Versioned<byte[]>>> iterator) {
+        public EntriesIterator(ClosableIterator<Pair<ByteArray, Versioned<byte[]>>> iterator) {
             this.iterator = iterator;
         }
 

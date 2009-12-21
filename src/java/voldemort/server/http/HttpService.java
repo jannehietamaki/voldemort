@@ -37,7 +37,7 @@ import voldemort.server.http.gui.ReadOnlyStoreManagementServlet;
 import voldemort.server.http.gui.StatusServlet;
 import voldemort.server.http.gui.VelocityEngine;
 import voldemort.server.protocol.RequestHandler;
-import voldemort.server.protocol.RequestHandlerFactory;
+import voldemort.server.protocol.SocketRequestHandlerFactory;
 
 /**
  * An embedded http server that uses jetty
@@ -58,6 +58,7 @@ public class HttpService extends AbstractService {
     private Server httpServer;
     private Context context;
 
+    @SuppressWarnings("unused")
     public HttpService(VoldemortServer server,
                        StoreRepository storeRepository,
                        RequestFormatType requestType,
@@ -68,9 +69,10 @@ public class HttpService extends AbstractService {
         this.numberOfThreads = numberOfThreads;
         this.server = server;
         this.velocityEngine = new VelocityEngine(VoldemortServletContextListener.VOLDEMORT_TEMPLATE_DIR);
-        this.requestHandler = new RequestHandlerFactory(storeRepository,
-                                                        server.getVoldemortMetadata(),
-                                                        server.getVoldemortConfig()).getRequestHandler(requestType);
+        this.requestHandler = new SocketRequestHandlerFactory(server.getStoreRepository(),
+                                                              server.getMetadataStore(),
+                                                              server.getVoldemortConfig(),
+                                                              server.getAsyncRunner()).getRequestHandler(requestType);
     }
 
     @Override

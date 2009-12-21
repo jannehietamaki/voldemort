@@ -32,8 +32,12 @@ import voldemort.serialization.Serializer;
 import voldemort.serialization.SerializerDefinition;
 import voldemort.serialization.SerializerFactory;
 import voldemort.utils.ByteArray;
+import voldemort.utils.ClosableIterator;
+import voldemort.utils.Pair;
+import voldemort.versioning.Version;
 import voldemort.versioning.Versioned;
 
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 
 /**
@@ -114,17 +118,59 @@ public class StoreUtils {
         }
     }
 
+    /**
+     * Check if the current node is part of routing request based on cluster.xml
+     * or throw an exception.
+     * 
+     * @param key
+     * @param routingStrategy
+     * @param currentNodeId
+     */
     public static void assertValidMetadata(ByteArray key,
                                            RoutingStrategy routingStrategy,
-                                           int currentNodeId) {
+                                           Node currentNode) {
         List<Node> nodes = routingStrategy.routeRequest(key.get());
         for(Node node: nodes) {
-            if(node.getId() == currentNodeId) {
+            if(node.getId() == currentNode.getId()) {
                 return;
             }
         }
 
-        throw new InvalidMetadataException("client routing strategy not in sync with store routing strategy!");
+        throw new InvalidMetadataException("client attempt accessing key belonging to partition:"
+                                           + routingStrategy.getPartitionList(key.get())
+                                           + " at Node:" + currentNode);
+    }
+
+    public static <V> List<Version> getVersions(List<Versioned<V>> versioneds) {
+        List<Version> versions = Lists.newArrayListWithCapacity(versioneds.size());
+        for(Versioned<?> versioned: versioneds)
+            versions.add(versioned.getVersion());
+        return versions;
+    }
+
+    public static <K, V> ClosableIterator<K> keys(final ClosableIterator<Pair<K, V>> values) {
+        return new ClosableIterator<K>() {
+
+            public void close() {
+                values.close();
+            }
+
+            public boolean hasNext() {
+                return values.hasNext();
+            }
+
+            public K next() {
+                Pair<K, V> value = values.next();
+                if(value == null)
+                    return null;
+                return value.getFirst();
+            }
+
+            public void remove() {
+                values.remove();
+            }
+
+        };
     }
 
     /**
@@ -136,5 +182,19 @@ public class StoreUtils {
     public static <T> Serializer<T> unsafeGetSerializer(SerializerFactory serializerFactory,
                                                         SerializerDefinition serializerDefinition) {
         return (Serializer<T>) serializerFactory.getSerializer(serializerDefinition);
+    }
+
+    /**
+     * Get a store definition from the given list of store definitions
+     * 
+     * @param list A list of store definitions
+     * @param name The name of the store
+     * @return The store definition
+     */
+    public static StoreDefinition getStoreDef(List<StoreDefinition> list, String name) {
+        for(StoreDefinition def: list)
+            if(def.getName().equals(name))
+                return def;
+        return null;
     }
 }

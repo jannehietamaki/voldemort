@@ -41,6 +41,7 @@ import voldemort.store.InsufficientOperationalNodesException;
 import voldemort.store.SleepyStore;
 import voldemort.store.Store;
 import voldemort.store.StoreDefinition;
+import voldemort.store.StoreDefinitionBuilder;
 import voldemort.store.UnreachableStoreException;
 import voldemort.store.memory.InMemoryStorageEngine;
 import voldemort.store.versioned.InconsistencyResolvingStore;
@@ -49,6 +50,7 @@ import voldemort.utils.Utils;
 import voldemort.versioning.Occured;
 import voldemort.versioning.VectorClock;
 import voldemort.versioning.VectorClockInconsistencyResolver;
+import voldemort.versioning.Version;
 import voldemort.versioning.Versioned;
 
 import com.google.common.collect.Iterables;
@@ -351,6 +353,22 @@ public class RoutedStoreTest extends AbstractByteArrayStoreTest {
         assertOperationalNodes(cluster, 0);
     }
 
+    public void testGetVersions2() throws Exception {
+        List<ByteArray> keys = getKeys(2);
+        ByteArray key = keys.get(0);
+        byte[] value = getValue();
+        Store<ByteArray, byte[]> store = getStore();
+        store.put(key, Versioned.value(value));
+        List<Versioned<byte[]>> versioneds = store.get(key);
+        List<Version> versions = store.getVersions(key);
+        assertEquals(1, versioneds.size());
+        assertEquals(9, versions.size());
+        for(int i = 0; i < versions.size(); i++)
+            assertEquals(versioneds.get(0).getVersion(), versions.get(i));
+
+        assertEquals(0, store.getVersions(keys.get(1)).size());
+    }
+
     /**
      * Tests that getAll works correctly with a node down in a two node cluster.
      */
@@ -555,19 +573,18 @@ public class RoutedStoreTest extends AbstractByteArrayStoreTest {
 
     public void testPutTimeout() {
         int timeout = 50;
-        StoreDefinition definition = new StoreDefinition("test",
-                                                         "foo",
-                                                         new SerializerDefinition("test"),
-                                                         new SerializerDefinition("test"),
-                                                         RoutingTier.CLIENT,
-                                                         RoutingStrategyType.CONSISTENT_STRATEGY,
-                                                         3,
-                                                         3,
-                                                         3,
-                                                         3,
-                                                         3,
-                                                         0,
-                                                         1);
+        StoreDefinition definition = new StoreDefinitionBuilder().setName("test")
+                                                                 .setType("foo")
+                                                                 .setKeySerializer(new SerializerDefinition("test"))
+                                                                 .setValueSerializer(new SerializerDefinition("test"))
+                                                                 .setRoutingPolicy(RoutingTier.CLIENT)
+                                                                 .setRoutingStrategyType(RoutingStrategyType.CONSISTENT_STRATEGY)
+                                                                 .setReplicationFactor(3)
+                                                                 .setPreferredReads(3)
+                                                                 .setRequiredReads(3)
+                                                                 .setPreferredWrites(3)
+                                                                 .setRequiredWrites(3)
+                                                                 .build();
         Map<Integer, Store<ByteArray, byte[]>> stores = new HashMap<Integer, Store<ByteArray, byte[]>>();
         List<Node> nodes = new ArrayList<Node>();
         int totalDelay = 0;

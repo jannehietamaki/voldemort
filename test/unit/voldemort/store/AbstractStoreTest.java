@@ -27,6 +27,7 @@ import java.util.Map;
 
 import junit.framework.TestCase;
 import voldemort.TestUtils;
+import voldemort.utils.ByteArray;
 import voldemort.versioning.ObsoleteVersionException;
 import voldemort.versioning.VectorClock;
 import voldemort.versioning.Version;
@@ -53,6 +54,13 @@ public abstract class AbstractStoreTest<K, V> extends TestCase {
         List<byte[]> values = new ArrayList<byte[]>();
         for(int i = 0; i < numValues; i++)
             values.add(TestUtils.randomBytes(size));
+        return values;
+    }
+
+    public List<ByteArray> getByteArrayValues(int numValues, int size) {
+        List<ByteArray> values = new ArrayList<ByteArray>();
+        for(int i = 0; i < numValues; i++)
+            values.add(new ByteArray(TestUtils.randomBytes(size)));
         return values;
     }
 
@@ -206,8 +214,17 @@ public abstract class AbstractStoreTest<K, V> extends TestCase {
         assertContains(store.get(key), versioned);
 
         // test that putting a concurrent version succeeds
-        store.put(key, new Versioned<V>(getValue(), getClock(1, 2)));
-        assertEquals(2, store.get(key).size());
+        if(allowConcurrentOperations()) {
+            store.put(key, new Versioned<V>(getValue(), getClock(1, 2)));
+            assertEquals(2, store.get(key).size());
+        } else {
+            try {
+                store.put(key, new Versioned<V>(getValue(), getClock(1, 2)));
+                fail();
+            } catch(ObsoleteVersionException e) {
+                // expected
+            }
+        }
 
         // test that putting an incremented version succeeds
         Versioned<V> newest = new Versioned<V>(getValue(), getClock(1, 1, 2, 2));
@@ -242,6 +259,22 @@ public abstract class AbstractStoreTest<K, V> extends TestCase {
         // now delete that version too
         assertTrue("Delete failed!", store.delete(key, c2));
         assertEquals(0, store.get(key).size());
+    }
+
+    public void testGetVersions() throws Exception {
+        List<K> keys = getKeys(2);
+        K key = keys.get(0);
+        V value = getValue();
+        Store<K, V> store = getStore();
+        store.put(key, Versioned.value(value));
+        List<Versioned<V>> versioneds = store.get(key);
+        List<Version> versions = store.getVersions(key);
+        assertEquals(1, versioneds.size());
+        assertTrue(versions.size() > 0);
+        for(int i = 0; i < versions.size(); i++)
+            assertEquals(versioneds.get(0).getVersion(), versions.get(i));
+
+        assertEquals(0, store.getVersions(keys.get(1)).size());
     }
 
     public void testGetAll() throws Exception {
@@ -282,5 +315,9 @@ public abstract class AbstractStoreTest<K, V> extends TestCase {
     protected void assertGetAllValues(V expectedValue, List<Versioned<V>> versioneds) {
         assertEquals(1, versioneds.size());
         valuesEqual(expectedValue, versioneds.get(0).getValue());
+    }
+
+    protected boolean allowConcurrentOperations() {
+        return true;
     }
 }

@@ -18,9 +18,12 @@ package voldemort;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.StringReader;
 import java.net.ServerSocket;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.commons.httpclient.HttpClient;
 import org.apache.commons.io.FileUtils;
@@ -31,6 +34,8 @@ import org.mortbay.jetty.servlet.ServletHolder;
 import voldemort.client.RoutingTier;
 import voldemort.client.protocol.RequestFormatFactory;
 import voldemort.client.protocol.RequestFormatType;
+import voldemort.client.protocol.admin.AdminClient;
+import voldemort.client.protocol.admin.AdminClientConfig;
 import voldemort.cluster.Cluster;
 import voldemort.cluster.Node;
 import voldemort.routing.RoutingStrategyType;
@@ -38,13 +43,16 @@ import voldemort.serialization.SerializerDefinition;
 import voldemort.server.AbstractSocketService;
 import voldemort.server.StoreRepository;
 import voldemort.server.VoldemortConfig;
+import voldemort.server.VoldemortServer;
 import voldemort.server.http.StoreServlet;
 import voldemort.server.niosocket.NioSocketService;
 import voldemort.server.protocol.RequestHandler;
 import voldemort.server.protocol.RequestHandlerFactory;
+import voldemort.server.protocol.SocketRequestHandlerFactory;
 import voldemort.server.socket.SocketService;
 import voldemort.store.Store;
 import voldemort.store.StoreDefinition;
+import voldemort.store.StoreDefinitionBuilder;
 import voldemort.store.http.HttpStore;
 import voldemort.store.memory.InMemoryStorageConfiguration;
 import voldemort.store.memory.InMemoryStorageEngine;
@@ -53,8 +61,11 @@ import voldemort.store.socket.SocketDestination;
 import voldemort.store.socket.SocketPool;
 import voldemort.store.socket.SocketStore;
 import voldemort.utils.ByteArray;
+import voldemort.utils.ByteUtils;
 import voldemort.utils.Props;
 import voldemort.versioning.Versioned;
+import voldemort.xml.ClusterMapper;
+import voldemort.xml.StoreDefinitionsMapper;
 
 import com.google.common.collect.ImmutableList;
 
@@ -71,11 +82,10 @@ public class ServerTestUtils {
         Store<ByteArray, byte[]> store = new InMemoryStorageEngine<ByteArray, byte[]>(storeName);
         repository.addLocalStore(store);
         repository.addRoutedStore(store);
-        MetadataStore metadata = new MetadataStore(new InMemoryStorageEngine<String, String>("metadata"));
-        metadata.put(new ByteArray(MetadataStore.CLUSTER_KEY.getBytes()),
-                     new Versioned<byte[]>(clusterXml.getBytes()));
-        metadata.put(new ByteArray(MetadataStore.STORES_KEY.getBytes()),
-                     new Versioned<byte[]>(storesXml.getBytes()));
+
+        // create new metadata store.
+        MetadataStore metadata = createMetadataStore(new ClusterMapper().readCluster(new StringReader(clusterXml)),
+                                                     new StoreDefinitionsMapper().readStoreList(new StringReader(storesXml)));
         repository.addLocalStore(metadata);
         return repository;
     }
@@ -92,12 +102,23 @@ public class ServerTestUtils {
                                                          String storesXml,
                                                          String storeName,
                                                          int port) {
-        RequestHandlerFactory factory = new RequestHandlerFactory(getStores(storeName,
-                                                                            clusterXml,
-                                                                            storesXml),
-                                                                  null,
-                                                                  getVoldemortConfig());
+        RequestHandlerFactory factory = getSocketRequestHandlerFactory(clusterXml,
+                                                                       storesXml,
+                                                                       getStores(storeName,
+                                                                                 clusterXml,
+                                                                                 storesXml));
         return getSocketService(useNio, factory, port, 5, 10, 10000);
+    }
+
+    public static RequestHandlerFactory getSocketRequestHandlerFactory(String clusterXml,
+                                                                       String storesXml,
+                                                                       StoreRepository storeRepsitory) {
+
+        return new SocketRequestHandlerFactory(storeRepsitory,
+                                               createMetadataStore(new ClusterMapper().readCluster(new StringReader(clusterXml)),
+                                                                   new StoreDefinitionsMapper().readStoreList(new StringReader(storesXml))),
+                                               null,
+                                               null);
     }
 
     public static AbstractSocketService getSocketService(boolean useNio,
@@ -152,7 +173,7 @@ public class ServerTestUtils {
         server.setSendServerVersion(false);
         Context context = new Context(server, "/", Context.NO_SESSIONS);
 
-        RequestHandler handler = new RequestHandlerFactory(repository, null, getVoldemortConfig()).getRequestHandler(requestFormat);
+        RequestHandler handler = getSocketRequestHandlerFactory(clusterXml, storesXml, repository).getRequestHandler(requestFormat);
         context.addServlet(new ServletHolder(new StoreServlet(handler)), "/stores");
         server.start();
         return context;
@@ -199,41 +220,69 @@ public class ServerTestUtils {
     }
 
     public static Cluster getLocalCluster(int numberOfNodes) {
-        return getLocalCluster(numberOfNodes, findFreePorts(2 * numberOfNodes));
+        return getLocalCluster(numberOfNodes, findFreePorts(3 * numberOfNodes), null);
     }
 
-    public static Cluster getLocalCluster(int numberOfNodes, int[] ports) {
-        if(2 * numberOfNodes != ports.length)
+    public static Cluster getLocalCluster(int numberOfNodes, int[][] partitionMap) {
+        return getLocalCluster(numberOfNodes, findFreePorts(3 * numberOfNodes), partitionMap);
+    }
+
+    public static Cluster getLocalCluster(int numberOfNodes, int[] ports, int[][] partitionMap) {
+        if(3 * numberOfNodes != ports.length)
             throw new IllegalArgumentException(3 * numberOfNodes + " ports required but only "
                                                + ports.length + " given.");
         List<Node> nodes = new ArrayList<Node>();
-        for(int i = 0; i < numberOfNodes; i++)
-            nodes.add(new Node(i, "localhost", ports[2 * i], ports[2 * i + 1], ImmutableList.of(i)));
+        for(int i = 0; i < numberOfNodes; i++) {
+            List<Integer> partitions = ImmutableList.of(i);
+            if(null != partitionMap) {
+                partitions = new ArrayList<Integer>(partitionMap[i].length);
+                for(int p: partitionMap[i]) {
+                    partitions.add(p);
+                }
+            }
+
+            nodes.add(new Node(i,
+                               "localhost",
+                               ports[3 * i],
+                               ports[3 * i + 1],
+                               ports[3 * i + 2],
+                               partitions));
+        }
+
         return new Cluster("test-cluster", nodes);
     }
 
     public static Node getLocalNode(int nodeId, List<Integer> partitions) {
-        int[] ports = findFreePorts(2);
-        return new Node(nodeId, "localhost", ports[0], ports[1], partitions);
+        int[] ports = findFreePorts(3);
+        return new Node(nodeId, "localhost", ports[0], ports[1], ports[2], partitions);
+    }
+
+    public static MetadataStore createMetadataStore(Cluster cluster, List<StoreDefinition> storeDefs) {
+        Store<String, String> innerStore = new InMemoryStorageEngine<String, String>("inner-store");
+        innerStore.put(MetadataStore.CLUSTER_KEY,
+                       new Versioned<String>(new ClusterMapper().writeCluster(cluster)));
+        innerStore.put(MetadataStore.STORES_KEY,
+                       new Versioned<String>(new StoreDefinitionsMapper().writeStoreList(storeDefs)));
+
+        return new MetadataStore(innerStore, 0);
     }
 
     public static List<StoreDefinition> getStoreDefs(int numStores) {
         List<StoreDefinition> defs = new ArrayList<StoreDefinition>();
         SerializerDefinition serDef = new SerializerDefinition("string");
         for(int i = 0; i < numStores; i++)
-            defs.add(new StoreDefinition("test" + i,
-                                         InMemoryStorageConfiguration.TYPE_NAME,
-                                         serDef,
-                                         serDef,
-                                         RoutingTier.SERVER,
-                                         RoutingStrategyType.CONSISTENT_STRATEGY,
-                                         2,
-                                         1,
-                                         1,
-                                         1,
-                                         1,
-                                         1,
-                                         1));
+            defs.add(new StoreDefinitionBuilder().setName("test" + i)
+                                                 .setType(InMemoryStorageConfiguration.TYPE_NAME)
+                                                 .setKeySerializer(serDef)
+                                                 .setValueSerializer(serDef)
+                                                 .setRoutingPolicy(RoutingTier.SERVER)
+                                                 .setRoutingStrategyType(RoutingStrategyType.CONSISTENT_STRATEGY)
+                                                 .setReplicationFactor(2)
+                                                 .setPreferredReads(1)
+                                                 .setRequiredReads(1)
+                                                 .setPreferredWrites(1)
+                                                 .setRequiredWrites(1)
+                                                 .build());
         return defs;
     }
 
@@ -245,19 +294,31 @@ public class ServerTestUtils {
                                               int rwrites,
                                               String strategyType) {
         SerializerDefinition serDef = new SerializerDefinition("string");
-        return new StoreDefinition(storeName,
-                                   InMemoryStorageConfiguration.TYPE_NAME,
-                                   serDef,
-                                   serDef,
-                                   RoutingTier.SERVER,
-                                   strategyType,
-                                   replicationFactor,
-                                   preads,
-                                   rreads,
-                                   pwrites,
-                                   rwrites,
-                                   1,
-                                   1);
+        return new StoreDefinitionBuilder().setName(storeName)
+                                           .setType(InMemoryStorageConfiguration.TYPE_NAME)
+                                           .setKeySerializer(serDef)
+                                           .setValueSerializer(serDef)
+                                           .setRoutingPolicy(RoutingTier.SERVER)
+                                           .setRoutingStrategyType(strategyType)
+                                           .setReplicationFactor(replicationFactor)
+                                           .setPreferredReads(preads)
+                                           .setRequiredReads(rreads)
+                                           .setPreferredWrites(pwrites)
+                                           .setRequiredWrites(rwrites)
+                                           .build();
+    }
+
+    public static HashMap<ByteArray, byte[]> createRandomKeyValuePairs(int numKeys) {
+        HashMap<ByteArray, byte[]> map = new HashMap<ByteArray, byte[]>();
+        for(int cnt = 0; cnt <= numKeys; cnt++) {
+            int keyInt = (int) (Math.random() * 100000);
+            ByteArray key = new ByteArray(ByteUtils.getBytes("" + keyInt, "UTF-8"));
+            byte[] value = ByteUtils.getBytes("value-" + keyInt, "UTF-8");
+
+            map.put(key, value);
+        }
+
+        return map;
     }
 
     public static VoldemortConfig createServerConfig(int nodeId,
@@ -277,13 +338,17 @@ public class ServerTestUtils {
         config.setMysqlDatabaseName("voldemort");
         config.setMysqlUsername("voldemort");
         config.setMysqlPassword("voldemort");
+        config.setStreamMaxReadBytesPerSec(10 * 1000 * 1000);
+        config.setStreamMaxWriteBytesPerSec(10 * 1000 * 1000);
 
         // clean and reinit metadata dir.
         File tempDir = new File(config.getMetadataDirectory());
         tempDir.mkdirs();
+        tempDir.deleteOnExit();
 
         File tempDir2 = new File(config.getDataDirectory());
         tempDir2.mkdirs();
+        tempDir2.deleteOnExit();
 
         // copy cluster.xml / stores.xml to temp metadata dir.
         if(null != clusterFile)
@@ -296,4 +361,41 @@ public class ServerTestUtils {
 
         return config;
     }
+
+    public static AdminClient getAdminClient(Cluster cluster) {
+
+        AdminClientConfig config = new AdminClientConfig();
+        config.setMaxConnectionsPerNode(2);
+        config.setConnectionTimeout(10000, TimeUnit.MILLISECONDS);
+        config.setSocketTimeout(5 * 60 * 1000, TimeUnit.MILLISECONDS);
+        config.setSocketBufferSize(32 * 1024);
+
+        return new AdminClient(cluster, config);
+    }
+
+    public static AdminClient getAdminClient(String bootstrapURL) {
+        AdminClientConfig config = new AdminClientConfig();
+        config.setMaxConnectionsPerNode(2);
+        config.setConnectionTimeout(10000, TimeUnit.MILLISECONDS);
+        config.setSocketTimeout(5 * 60 * 1000, TimeUnit.MILLISECONDS);
+        config.setSocketBufferSize(32 * 1024);
+
+        return new AdminClient(bootstrapURL, config);
+    }
+
+    public static RequestHandlerFactory getSocketRequestHandlerFactory(StoreRepository repository) {
+        return new SocketRequestHandlerFactory(repository, null, null, null);
+    }
+
+    public static void stopVoldemortServer(VoldemortServer server) throws IOException {
+        server.stop();
+        FileUtils.deleteDirectory(new File(server.getVoldemortConfig().getVoldemortHome()));
+    }
+
+    public static VoldemortServer startVoldemortServer(VoldemortConfig config, Cluster cluster) {
+        VoldemortServer server = new VoldemortServer(config, cluster);
+        server.start();
+        return server;
+    }
+
 }
